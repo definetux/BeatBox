@@ -1,12 +1,19 @@
+import sun.text.resources.FormatData_iw_IL;
+
 import javax.sound.midi.*;
 import javax.swing.*;
-import javax.swing.filechooser.*;
-import javax.swing.filechooser.FileFilter;
+import javax.swing.event.ListSelectionEvent;
+import javax.swing.event.ListSelectionListener;
+import javax.swing.text.html.HTMLDocument;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.*;
+import java.net.Socket;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Vector;
 
 public class BeatBox {
 
@@ -16,8 +23,18 @@ public class BeatBox {
     ArrayList<JCheckBox> checkboxList;
     Sequencer sequencer;
     Sequence sequence;
+    Sequence mySequence = null;
     Track track;
     JFrame theFrame;
+    JList incomingList;
+    JTextField userMessage;
+    JTextField txtUserName;
+    int nextNum;
+    Vector<String> listVector = new Vector<String>();
+    String userName;
+    ObjectInputStream in;
+    ObjectOutputStream out;
+    HashMap<String, boolean[]> otherSeqsMap = new HashMap<String, boolean[]>();
 
     String[] instrumentNames = {"Bass Drum", "Closed Hi-Hat", "Open Hi-Hat", "Acoustic Snare", "Crash Cymbal",
             "Hand Clap", "High Tom", "Hi Bongo", "Maracas", "Whistle", "Low Conga", "Cowbell", "Vibraslap", "Low-mid Tom",
@@ -27,18 +44,40 @@ public class BeatBox {
 
     public static void main(String[] args) {
         BeatBox beatBox = new BeatBox();
-        beatBox.buildGui();
+        beatBox.startUp();
+    }
+
+    public void startUp() {
+        try {
+            Socket socket = new Socket("127.0.0.1", 4242);
+            out = new ObjectOutputStream(socket.getOutputStream());
+            in = new ObjectInputStream(socket.getInputStream());
+            Thread remote = new Thread(new RemoteReader());
+            remote.start();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        setUpMidi();
+        buildGui();
     }
 
     public void buildGui() {
         theFrame = new JFrame("Cyber BeatBox");
-        theFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         BorderLayout layout = new BorderLayout();
         JPanel background = new JPanel(layout);
         background.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         checkboxList = new ArrayList<JCheckBox>();
         Box buttonBox = new Box(BoxLayout.Y_AXIS);
+
+        txtUserName = new JTextField(10);
+        txtUserName.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                userName = txtUserName.getText();
+            }
+        });
+        buttonBox.add(txtUserName);
 
         JButton start = new JButton("Start");
         start.addActionListener(new ActionListener() {
@@ -144,6 +183,51 @@ public class BeatBox {
         });
         buttonBox.add(load);
 
+        JButton sendIt = new JButton("sendIt");
+        sendIt.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                boolean[] checkboxState = new boolean[FIELDS_COUNT];
+                for (int i = 0; i < FIELDS_COUNT; i++) {
+                    JCheckBox check = (JCheckBox) checkboxList.get(i);
+                    if (check.isSelected()) {
+                        checkboxState[i] = true;
+                    }
+                }
+                String messageToSend = null;
+                try {
+                    out.writeObject(userName + nextNum++ + ": " + userMessage.getText());
+                    out.writeObject(checkboxState);
+                } catch (Exception ex) {
+                    System.out.println("Sorry dude. Could not send it to the server");
+                }
+            }
+        });
+        buttonBox.add(sendIt);
+
+        userMessage = new JTextField();
+        buttonBox.add(userMessage);
+
+        incomingList = new JList();
+        incomingList.addListSelectionListener(new ListSelectionListener() {
+            @Override
+            public void valueChanged(ListSelectionEvent e) {
+                if (!e.getValueIsAdjusting()) {
+                    String selected = (String) incomingList.getSelectedValue();
+                    if( selected != null) {
+                        boolean[] selectedState = (boolean[]) otherSeqsMap.get(selected);
+                        changeSequence(selectedState);
+                        sequencer.stop();
+                        buildTrackAndStart();
+                    }
+                }
+            }
+        });
+        incomingList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        JScrollPane theList = new JScrollPane(incomingList);
+        buttonBox.add(theList);
+        incomingList.setListData(listVector);
+
         Box nameBox = new Box(BoxLayout.Y_AXIS);
         for (int i = 0; i < TACTS; i++) {
             nameBox.add(new Label(instrumentNames[i]));
@@ -174,6 +258,17 @@ public class BeatBox {
         theFrame.setVisible(true);
     }
 
+    private void changeSequence(boolean[] selectedState) {
+        for (int i = 0; i < FIELDS_COUNT; i++) {
+            JCheckBox check = (JCheckBox) checkboxList.get(i);
+            if (selectedState[i]) {
+                check.setSelected(true);
+            } else {
+                check.setSelected(false);
+            }
+        }
+    }
+
     private void checkboxesClear() {
         for(JCheckBox item : checkboxList) {
             item.setSelected(false);
@@ -192,7 +287,7 @@ public class BeatBox {
             sequencer.open();
 
             sequence = new Sequence( Sequence.PPQ, 4 );
-            Track track = sequence.createTrack();
+            track = sequence.createTrack();
             sequencer.setTempoInBPM( 120 );
         } catch ( Exception e ) {
             e.printStackTrace();
@@ -200,25 +295,25 @@ public class BeatBox {
     }
 
     public void buildTrackAndStart() {
-        int[] trackList = null;
+        ArrayList<Integer> trackList = null;
         sequence.deleteTrack(track);
         track = sequence.createTrack();
 
         for (int i = 0; i < TACTS; i++) {
-            trackList = new int[TACTS];
+            trackList = new ArrayList<Integer>();
 
-            int key = instruments[i];
             for (int j = 0; j < TACTS; j++) {
                 JCheckBox jc = (JCheckBox)checkboxList.get(j + (TACTS * i));
                 if (jc.isSelected()) {
-                    trackList[j] = key;
+                    int key = instruments[i];
+                    trackList.add(new Integer(key));
                 } else {
-                    trackList[j] = 0;
+                    trackList.add(null);
                 }
             }
 
             makeTracks(trackList);
-            track.add(makeEvent(176, 1, 127, 0, TACTS));
+            track.add(makeEvent(192, 9, 1, 0, TACTS - 1));
         }
 
         track.add(makeEvent(192, 9, 1, 0, 15));
@@ -232,13 +327,14 @@ public class BeatBox {
         }
     }
 
-    private void makeTracks(int[] trackList) {
+    private void makeTracks(ArrayList trackList) {
+        Iterator it = trackList.iterator();
         for (int i = 0; i < TACTS; i++) {
-            int key = trackList[i];
-
-            if (key != 0) {
-                track.add(makeEvent(144, 9, key, 100, i));
-                track.add(makeEvent(128, 9, key, 100, i + 1));
+            Integer num = (Integer) it.next();
+            if (num != null) {
+                int numKey = num.intValue();
+                track.add(makeEvent(144, 9, numKey, 100, i));
+                track.add(makeEvent(128, 9, numKey, 100, i + 1));
             }
         }
     }
@@ -253,5 +349,28 @@ public class BeatBox {
 
         }
         return event;
+    }
+
+    private class RemoteReader implements Runnable {
+        boolean[] checkboxState = null;
+        String nameToShow = null;
+        Object object = null;
+
+        @Override
+        public void run() {
+            try {
+                while ((object = in.readObject()) != null) {
+                    System.out.println("got an object from server");
+                    System.out.println(object.getClass());
+                    nameToShow = (String)object;
+                    checkboxState = (boolean[])in.readObject();
+                    otherSeqsMap.put(nameToShow, checkboxState);
+                    listVector.add(nameToShow);
+                    incomingList.setListData(listVector);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
     }
 }
